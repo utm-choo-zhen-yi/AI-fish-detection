@@ -1,36 +1,73 @@
 import streamlit as st
-from ultralytics import YOLO
+from flask import Flask, request, jsonify
+import threading
+import os
 import cv2
+import tempfile
 import numpy as np
 import csv
-import os
-import tempfile
+from ultralytics import YOLO
 
-# Load YOLO model
-MODEL_PATH = 'fish_detection_model.pt'  # Update this path if needed
+# YOLO model path
+MODEL_PATH = 'fish_detection_model.pt'
 model = YOLO(MODEL_PATH)
 
+# Set up the Flask API
+api_app = Flask(__name__)
+
+# Folder to store programmatically uploaded images
+UPLOAD_FOLDER = "uploaded_images"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+@api_app.route('/upload', methods=['POST'])
+def upload_files():
+    """API endpoint to handle image uploads."""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+
+    files = request.files.getlist("file")
+    saved_files = []
+    for file in files:
+        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(file_path)
+        saved_files.append(file_path)
+
+    return jsonify({"message": "Files uploaded successfully", "files": saved_files}), 200
+
+# Run Flask in a separate thread
+def run_flask():
+    api_app.run(host="0.0.0.0", port=8000)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+# Streamlit app UI
 st.title("Fish Detection and Size Analysis")
-st.write("Upload multiple images, and the system will find the image with the most fish, then analyze fish sizes.")
+st.write("Upload multiple images manually or send images programmatically to the `/upload` endpoint.")
 
-# Upload images
-uploaded_files = st.file_uploader("Upload Images", accept_multiple_files=True, type=["jpg", "png"])
+# Check for manually uploaded files via Streamlit UI
+uploaded_files = st.file_uploader("Upload Images (Manual)", accept_multiple_files=True, type=["jpg", "png"])
 
-if uploaded_files:
+# Gather programmatically uploaded files
+programmatic_files = [os.path.join(UPLOAD_FOLDER, f) for f in os.listdir(UPLOAD_FOLDER) if f.endswith((".jpg", ".png"))]
+
+if uploaded_files or programmatic_files:
     st.write("Processing images...")
-    temp_dir = tempfile.TemporaryDirectory()  # Temporary storage for images
-    max_fish_count = 0
-    best_image_path = None
-
-    # Save uploaded images locally for processing
+    temp_dir = tempfile.TemporaryDirectory()
     image_paths = []
+
+    # Save Streamlit-uploaded images to a temp directory
     for uploaded_file in uploaded_files:
         file_path = os.path.join(temp_dir.name, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         image_paths.append(file_path)
 
-    # Find the best image (with maximum fish detected)
+    # Add programmatic uploads
+    image_paths.extend(programmatic_files)
+
+    # Find the best image (max fish detected)
+    max_fish_count = 0
+    best_image_path = None
     for image_path in image_paths:
         image = cv2.imread(image_path)
         results = model(image)
@@ -56,7 +93,7 @@ if uploaded_files:
             fish_width = x2 - x1
             fish_height = y2 - y1
             fish_size_px = np.sqrt(fish_width ** 2 + fish_height ** 2)
-            fish_size_cm = fish_size_px * 0.05  # Assuming 1 pixel = 0.05 cm calibration factor
+            fish_size_cm = fish_size_px * 0.05  # Calibration factor (pixels to cm)
             fish_sizes[idx + 1] = fish_size_cm
 
         # Display results
@@ -86,4 +123,4 @@ if uploaded_files:
     # Clean up temporary files
     temp_dir.cleanup()
 else:
-    st.info("Please upload one or more images to start processing.")
+    st.info("Please upload images or send images programmatically to start processing.")
